@@ -1,10 +1,10 @@
 import { PrismaClient } from '@/generated/prisma/client';
 import { NextResponse } from 'next/server';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { phoneHashFromInput } from '@/lib/server/phone';
 import { custodialEnabled } from '@/lib/server/custodial';
-import { SESSION_COOKIE, SESSION_TTL_MS, sessionCookieOptions } from '@/lib/server/auth';
+import { PENDING_COOKIE, PENDING_ID_PREFIX, PENDING_TTL_MS, SESSION_COOKIE, SESSION_TTL_MS, sessionCookieOptions } from '@/lib/server/auth';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter });
@@ -77,6 +77,9 @@ export async function POST(request: Request) {
       );
     }
 
+    // Single use: a correct code can never be replayed.
+    await prisma.otpChallenge.delete({ where: { id: otpChallenge.id } });
+
     // OTP verified - create or update user session
     // Check if user exists
     const user = await prisma.user.findUnique({
@@ -98,14 +101,25 @@ export async function POST(request: Request) {
       userId = newUser.id;
     }
 
-    // Create session
-    const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+    // With server-held wallets a passkey is the second login factor. Users who already
+    // have one get only a short-lived pending session until the passkey check succeeds.
+    const hasPasskey = (await prisma.passkey.count({ where: { userId } })) > 0;
+    const needsPasskey = custodialEnabled() && hasPasskey;
+
+    const expiresAt = new Date(Date.now() + (needsPasskey ? PENDING_TTL_MS : SESSION_TTL_MS));
     const session = await prisma.session.create({
       data: {
+        ...(needsPasskey ? { id: `${PENDING_ID_PREFIX}${randomUUID()}` } : {}),
         userId,
         expiresAt,
       },
     });
+
+    if (needsPasskey) {
+      const pending = NextResponse.json({ success: true, passkeyRequired: true, custodial: true });
+      pending.cookies.set(PENDING_COOKIE, session.id, sessionCookieOptions(expiresAt));
+      return pending;
+    }
 
     const response = NextResponse.json({
       success: true,
@@ -113,6 +127,7 @@ export async function POST(request: Request) {
       userId,
       walletAddress: user?.walletAddress ?? null,
       custodial: custodialEnabled(),
+      hasPasskey,
     });
     response.cookies.set(SESSION_COOKIE, session.id, sessionCookieOptions(expiresAt));
     return response;

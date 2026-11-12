@@ -108,3 +108,20 @@ model IndexerState {
   id        Int    @id @default(1)
   lastLedger Int
 }
+
+// DEMO ONLY (SIMULATE_USDC=true): simulated USDC ledger, used while no testnet USDC is available.
+model SimBalance {
+  wallet    String   @id
+  balance   BigInt   @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+model SimTransfer {
+  id         String   @id @default(uuid())
+  kind       String
+  fromWallet String?
+  toWallet   String?
+  amount     BigInt
+  refId      String?
+  createdAt  DateTime @default(now())
+}

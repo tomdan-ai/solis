@@ -1,5 +1,6 @@
 import {
   Address,
+  Asset,
   BASE_FEE,
   Contract,
   Keypair,
@@ -187,7 +188,15 @@ export async function prepareInvocation(wallet: string, operation: StellarOperat
 
 /** USDC balance (7-decimal stroop units as a string) for a wallet via a read-only simulation. */
 export async function getUsdcBalance(wallet: string): Promise<string> {
-  const token = process.env.SOLIS_USDC_CONTRACT_ID;
+  return getTokenBalance(wallet, process.env.SOLIS_USDC_CONTRACT_ID);
+}
+
+/** Native XLM balance (7 decimals), read through the native asset's token contract. */
+export async function getXlmBalance(wallet: string): Promise<string> {
+  return getTokenBalance(wallet, Asset.native().contractId(networkPassphrase));
+}
+
+async function getTokenBalance(wallet: string, token: string | undefined): Promise<string> {
   if (!token) return '0';
   const server = new rpc.Server(rpcUrl);
   // Read-only simulation only needs *some* funded account as the source. A classic (G...)

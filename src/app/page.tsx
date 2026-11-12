@@ -1,9 +1,10 @@
 "use client";
 
+import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { formatUsdc, getKit, toStroops } from "@/lib/client/kit";
 
-type Screen = "loading" | "welcome" | "verify" | "passkey" | "deploying" | "wallet";
+type Screen = "loading" | "welcome" | "verify" | "passkey" | "passkeyLogin" | "deploying" | "wallet";
 type Tab = "home" | "receive" | "settings";
 type Payment = {
   id: string;
@@ -14,11 +15,38 @@ type Payment = {
   status: "PENDING" | "CLAIMED" | "REFUNDED";
   expiresAt: string;
 };
+type Transfer = { id: string; kind: string; fromWallet: string | null; toWallet: string | null; amount: string; createdAt: string };
 type Operation =
   | { kind: "transfer"; recipient: string; amount: string }
   | { kind: "deposit"; phoneHash: string; amount: string; expiresAt: number }
   | { kind: "claim"; paymentId: string }
   | { kind: "refund"; paymentId: string };
+
+// The server stores only a hash of the phone number, so this browser remembers the
+// number you signed in with, purely so the Receive tab can show it.
+const PHONE_KEY = "solis_phone";
+
+function toE164(raw: string): string {
+  const trimmed = raw.trim();
+  let digits = trimmed.replace(/^\+/, "").replace(/\D/g, "");
+  if (!trimmed.startsWith("+") && /^0\d{10}$/.test(digits)) digits = `234${digits.slice(1)}`;
+  return digits.length >= 8 && digits.length <= 15 ? `+${digits}` : "";
+}
+
+function formatPhone(e164: string): string {
+  const m = /^\+234(\d{3})(\d{3})(\d{4})$/.exec(e164);
+  return m ? `+234 ${m[1]} ${m[2]} ${m[3]}` : e164;
+}
+
+function loadPhone(): string {
+  try { return localStorage.getItem(PHONE_KEY) ?? ""; } catch { return ""; }
+}
+function savePhone(value: string) {
+  try { localStorage.setItem(PHONE_KEY, value); } catch { /* storage unavailable */ }
+}
+function clearPhone() {
+  try { localStorage.removeItem(PHONE_KEY); } catch { /* storage unavailable */ }
+}
 
 const REFUND_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 
@@ -66,28 +94,36 @@ export default function Home() {
   const [screen, setScreen] = useState<Screen>("loading");
   const [tab, setTab] = useState<Tab>("home");
   const [phone, setPhone] = useState("");
+  const [myPhone, setMyPhone] = useState("");
   const [code, setCode] = useState("");
   const [wallet, setWallet] = useState("");
   const [network, setNetwork] = useState("testnet");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [balance, setBalance] = useState("0");
+  const [xlm, setXlm] = useState("0");
+  const [simulated, setSimulated] = useState(false);
+  const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [sendPhone, setSendPhone] = useState("");
   const [sendAmount, setSendAmount] = useState("");
   const [recipient, setRecipient] = useState<{ registered: boolean; walletAddress: string | null; phoneHash: string } | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState("");
   const [custodial, setCustodial] = useState(false);
+  const [hasPasskey, setHasPasskey] = useState(false);
   const [now, setNow] = useState(0);
 
   const refresh = useCallback(async () => {
     try {
       const [bal, pays] = await Promise.all([
-        api<{ balance: string }>("/api/balance"),
-        api<{ payments: Payment[] }>("/api/payments"),
+        api<{ balance: string; xlm: string; simulated?: boolean }>("/api/balance"),
+        api<{ payments: Payment[]; transfers?: Transfer[] }>("/api/payments"),
       ]);
       setBalance(bal.balance);
+      setXlm(bal.xlm ?? "0");
+      setSimulated(Boolean(bal.simulated));
       setPayments(pays.payments);
+      setTransfers(pays.transfers ?? []);
     } catch {
       /* keep stale data; surfaced on next action */
     }
@@ -125,10 +161,12 @@ export default function Home() {
 
   useEffect(() => {
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
-    api<{ walletAddress: string | null; network: string; custodial: boolean }>("/api/auth/session")
+    api<{ walletAddress: string | null; network: string; custodial: boolean; hasPasskey: boolean }>("/api/auth/session")
       .then((session) => {
         setNetwork(session.network);
         setCustodial(session.custodial);
+        setMyPhone(loadPhone());
+        setHasPasskey(session.hasPasskey);
         if (session.walletAddress) {
           setWallet(session.walletAddress);
           setScreen("wallet");
@@ -165,11 +203,28 @@ export default function Home() {
     setBusy(true);
     setMessage("");
     try {
-      const data = await api<{ walletAddress: string | null; custodial: boolean }>("/api/auth/otp/verify", {
+      const data = await api<{ walletAddress: string | null; custodial: boolean; passkeyRequired?: boolean; hasPasskey?: boolean }>("/api/auth/otp/verify", {
         method: "POST",
         body: JSON.stringify({ phone, code }),
       });
       setCustodial(data.custodial);
+      const e164 = toE164(phone);
+      if (e164) {
+        savePhone(e164);
+        setMyPhone(e164);
+      }
+      if (data.passkeyRequired) {
+        // Second factor: OTP only earned a pending session; the passkey completes the login.
+        setScreen("passkeyLogin");
+        return;
+      }
+      setHasPasskey(Boolean(data.hasPasskey));
+      if (data.custodial && !data.hasPasskey) {
+        // First time with server-held wallets: create a passkey (then the wallet, if needed).
+        if (data.walletAddress) setWallet(data.walletAddress);
+        setScreen("passkey");
+        return;
+      }
       if (data.walletAddress) {
         setWallet(data.walletAddress);
         setScreen("wallet");
@@ -187,8 +242,91 @@ export default function Home() {
     }
   }
 
+  async function getTestUsdc() {
+    setBusy(true);
+    setMessage("");
+    try {
+      await api("/api/sim/faucet", { method: "POST" });
+      await refresh();
+      setMessage("Added 100 test USDC.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not add test USDC");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function registerPasskey() {
+    const options = await api<Parameters<typeof startRegistration>[0]["optionsJSON"]>("/api/auth/passkey/options", { method: "POST" });
+    const credential = await startRegistration({ optionsJSON: options });
+    await api("/api/auth/passkey/verify", { method: "POST", body: JSON.stringify(credential) });
+    setHasPasskey(true);
+  }
+
+  function passkeyMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.name === "NotAllowedError") {
+      return "The passkey prompt was cancelled or did not appear. Use Chrome or Safari (not an editor preview) and try again.";
+    }
+    return error instanceof Error ? error.message : fallback;
+  }
+
+  // Must start from a direct click: browsers refuse passkey prompts that are not user-initiated.
+  async function enrollPasskey() {
+    setBusy(true);
+    setMessage("");
+    try {
+      if (!hasPasskey) await registerPasskey();
+      if (wallet) setScreen("wallet");
+      else await deployWallet(true);
+    } catch (error) {
+      setMessage(passkeyMessage(error, "Could not create a passkey"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loginWithPasskey() {
+    setBusy(true);
+    setMessage("");
+    try {
+      const options = await api<Parameters<typeof startAuthentication>[0]["optionsJSON"]>("/api/auth/passkey/login/options", { method: "POST" });
+      const assertion = await startAuthentication({ optionsJSON: options });
+      const result = await api<{ walletAddress: string | null }>("/api/auth/passkey/login/verify", { method: "POST", body: JSON.stringify(assertion) });
+      setHasPasskey(true);
+      if (result.walletAddress) {
+        setWallet(result.walletAddress);
+        setScreen("wallet");
+      } else {
+        await deployWallet(true);
+      }
+    } catch (error) {
+      setMessage(passkeyMessage(error, "Passkey sign-in failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addPasskey() {
+    setBusy(true);
+    setMessage("");
+    try {
+      await registerPasskey();
+      setMessage("Passkey saved. You will use it the next time you log in.");
+    } catch (error) {
+      setMessage(passkeyMessage(error, "Could not create a passkey"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function logout() {
     await api("/api/auth/logout", { method: "POST" }).catch(() => {});
+    if (!custodial) {
+      // Passkey wallets: also drop the kit's stored wallet session so the next login starts clean.
+      try { await getKit().disconnect(); } catch { /* nothing stored */ }
+    }
+    clearPhone();
+    setMyPhone("");
     setWallet("");
     setPayments([]);
     setTab("home");
@@ -245,10 +383,10 @@ export default function Home() {
     }
   }
 
-  async function copy(text: string) {
+  async function copy(text: string, key: string) {
     await navigator.clipboard.writeText(text).catch(() => {});
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    setCopied(key);
+    setTimeout(() => setCopied(""), 1500);
   }
 
   if (screen === "loading") return <main className="app-shell"><p className="muted">Loading...</p></main>;
@@ -257,7 +395,7 @@ export default function Home() {
     const incoming = payments.filter((p) => p.senderWallet !== wallet && p.status === "PENDING");
     return (
       <main className="app-shell wallet-shell">
-        <header className="topbar"><span className="wordmark">solis<span>.</span></span><span className="network-dot">{network === "testnet" ? "Testnet" : "Mainnet"}</span></header>
+        <header className="topbar"><span className="wordmark">solis<span>.</span></span><span style={{ display: "flex", alignItems: "center", gap: "14px" }}><span className="network-dot">{network === "testnet" ? "Testnet" : "Mainnet"}</span><button className="text-button" onClick={logout}>Log out</button></span></header>
         <nav className="action-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
           {(["home", "receive", "settings"] as Tab[]).map((t) => (
             <button key={t} className={`action-card ${tab === t ? "primary" : ""}`} onClick={() => setTab(t)}><strong>{t[0].toUpperCase() + t.slice(1)}</strong></button>
@@ -266,7 +404,20 @@ export default function Home() {
 
         {tab === "home" && (
           <>
-            <section className="wallet-hero"><div><p className="eyebrow">Available balance</p><h1>${formatUsdc(balance)} <small>USDC</small></h1><p className="muted">{wallet.slice(0, 6)}…{wallet.slice(-4)}</p></div></section>
+            <section className="wallet-hero"><div><p className="eyebrow">Available balance</p><h1>${formatUsdc(balance)} <small>USDC</small></h1><p className="muted">+ {formatUsdc(xlm)} XLM for network fees</p>
+              {simulated && <p className="muted">USDC is simulated in this demo.</p>}<p className="muted">{wallet.slice(0, 6)}…{wallet.slice(-4)}</p></div></section>
+
+            {simulated && <button className="button button-dark" disabled={busy} onClick={getTestUsdc}>Get 100 test USDC</button>}
+
+            <section className="panel"><div className="panel-heading"><div><p className="eyebrow">Assets</p><h2>Wallet holdings</h2></div></div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr><th style={{ textAlign: "left" }}>Asset</th><th style={{ textAlign: "right" }}>Balance</th></tr></thead>
+                <tbody>
+                  <tr><td>XLM <span className="muted">(network fees)</span></td><td style={{ textAlign: "right" }}>{formatUsdc(xlm)}</td></tr>
+                  <tr><td>USDC</td><td style={{ textAlign: "right" }}>{formatUsdc(balance)}</td></tr>
+                </tbody>
+              </table>
+            </section>
 
             {incoming.length > 0 && (
               <section className="panel"><div className="panel-heading"><div><p className="eyebrow">Waiting for you</p><h2>Claim payments</h2></div></div>
@@ -288,14 +439,20 @@ export default function Home() {
               {recipient && (
                 <div className={`recipient-note ${recipient.registered ? "found" : "new"}`}>
                   <strong>{recipient.registered ? "Solis wallet found" : "They will need to claim"}</strong>
-                  <span>{recipient.registered ? `Send $${sendAmount} USDC directly.` : `$${sendAmount} waits in escrow for 7 days, then you can refund it.`}</span>
+                  <span>{recipient.registered ? `Send $${sendAmount} USDC directly.` : `$${sendAmount} waits in escrow until they join. You can refund it after it expires.`}</span>
                   <button className="button button-dark" disabled={busy} onClick={confirmSend}>{busy ? "Waiting for passkey..." : "Confirm with passkey"}</button>
                 </div>
               )}
             </section>
 
             <section className="panel activity"><div className="panel-heading"><div><p className="eyebrow">Activity</p><h2>Recent payments</h2></div></div>
-              {payments.length === 0 && <div className="empty-state">Your first payment will appear here.</div>}
+              {payments.length === 0 && transfers.length === 0 && <div className="empty-state">Your first payment will appear here.</div>}
+              {transfers.filter((t) => t.kind === "transfer" || t.kind === "faucet").map((t) => (
+                <div key={t.id} className="recipient-note">
+                  <strong>{t.kind === "faucet" ? "Test USDC added" : t.fromWallet === wallet ? "Sent" : "Received"} ${formatUsdc(t.amount)} USDC</strong>
+                  <span>{new Date(t.createdAt).toLocaleString()}</span>
+                </div>
+              ))}
               {payments.map((p) => {
                 const mine = p.senderWallet === wallet;
                 const expired = new Date(p.expiresAt).getTime() <= now;
@@ -312,11 +469,13 @@ export default function Home() {
         )}
 
         {tab === "receive" && (
-          <section className="panel"><div className="panel-heading"><div><p className="eyebrow">Your Solis ID</p><h2>{phone || "Your phone number"}</h2></div></div>
-            <p className="muted">Anyone can pay you with just your phone number.</p>
+          <section className="panel"><div className="panel-heading"><div><p className="eyebrow">Your Solis ID</p><h2>{myPhone ? formatPhone(myPhone) : "Phone number not shown"}</h2></div></div>
+            <p className="muted">{myPhone ? "Anyone can pay you with just this phone number." : "We store only a hash of your number, not the number itself. Log out and sign in again on this device to show it here."}</p>
+            {myPhone && <button className="button button-dark" onClick={() => copy(myPhone, "phone")}>{copied === "phone" ? "Copied" : "Copy phone number"}</button>}
+            <p className="eyebrow">Wallet address</p>
             <p className="muted" style={{ wordBreak: "break-all" }}>{wallet}</p>
-            <button className="button button-dark" onClick={() => copy(wallet)}>{copied ? "Copied" : "Copy wallet address"}</button>
-            {typeof navigator !== "undefined" && "share" in navigator && <button className="text-button" onClick={() => navigator.share({ title: "Pay me on Solis", text: `Send me USDC on Solis: ${phone}` }).catch(() => {})}>Share</button>}
+            <button className="text-button" onClick={() => copy(wallet, "wallet")}>{copied === "wallet" ? "Copied" : "Copy wallet address"}</button>
+            {myPhone && typeof navigator !== "undefined" && "share" in navigator && <button className="text-button" onClick={() => navigator.share({ title: "Pay me on Solis", text: `Send me USDC on Solis: ${formatPhone(myPhone)}` }).catch(() => {})}>Share</button>}
           </section>
         )}
 
@@ -325,7 +484,9 @@ export default function Home() {
             <p className="muted">Network: {network}</p>
             <p className="muted" style={{ wordBreak: "break-all" }}>Address: {wallet}</p>
             {custodial
-              ? <p className="muted">Demo wallet: the server holds this wallet&apos;s key on testnet. This mode is disabled in production.</p>
+              ? <><p className="muted">Demo wallet: the server holds this wallet&apos;s key on testnet. This mode is disabled in production.</p>
+                <p className="muted">Passkey login: {hasPasskey ? "enabled" : "not set up"}</p>
+                <button className="button button-dark" disabled={busy} onClick={addPasskey}>{hasPasskey ? "Add another passkey" : "Set up passkey login"}</button></>
               : <><p className="muted">Recovery: your passkey is the only key to this wallet. If every device and synced passkey is lost, funds cannot be recovered in this MVP.</p>
                 <button className="button button-dark" disabled={busy} onClick={async () => {
                   setBusy(true);
@@ -350,7 +511,14 @@ export default function Home() {
           <form onSubmit={verifyCode} className="auth-form"><label htmlFor="code">Verification code</label><input id="code" className="code-input" value={code} onChange={(e) => setCode(e.target.value)} placeholder="000000" inputMode="numeric" autoComplete="one-time-code" maxLength={6} required /><button className="button button-dark" disabled={busy}>{busy ? "Verifying..." : "Open my wallet"}</button></form>
           <button className="text-button" onClick={() => setScreen("welcome")}>Use a different number</button>
           </>}
-        {screen === "passkey" && <><div className="step-count">03 <span>/ 03</span></div><h2>Create your wallet</h2><p className="muted intro">{custodial ? "Your phone is verified. We'll create a testnet demo wallet for you." : "Your phone is verified. Next, create a passkey. It is the only key to your wallet, so it stays on your device."}</p><button className="button button-dark" onClick={() => deployWallet()}>{custodial ? "Create my wallet" : "Create passkey & wallet"}</button></>}
+        {screen === "passkey" && (custodial
+          ? <><div className="step-count">03 <span>/ 03</span></div><h2>Secure your account</h2><p className="muted intro">Create a passkey with Touch ID, Face ID or your device PIN. You will use it every time you log in.</p>
+            <button className="button button-dark" disabled={busy} onClick={enrollPasskey}>{busy ? "Waiting for passkey..." : "Create passkey"}</button>
+            {wallet && <button className="text-button" onClick={() => setScreen("wallet")}>Skip for now</button>}</>
+          : <><div className="step-count">03 <span>/ 03</span></div><h2>Create your wallet</h2><p className="muted intro">{custodial ? "Your phone is verified. We'll create a testnet demo wallet for you." : "Your phone is verified. Next, create a passkey. It is the only key to your wallet, so it stays on your device."}</p><button className="button button-dark" onClick={() => deployWallet()}>{custodial ? "Create my wallet" : "Create passkey & wallet"}</button></>)}
+        {screen === "passkeyLogin" && <><h2>Unlock with your passkey</h2><p className="muted intro">Your number is verified. Use your passkey to finish signing in.</p>
+          <button className="button button-dark" disabled={busy} onClick={loginWithPasskey}>{busy ? "Waiting for passkey..." : "Unlock with passkey"}</button>
+          <button className="text-button" onClick={() => { setMessage(""); setScreen("welcome"); }}>Use a different number</button></>}
         {screen === "deploying" && <><h2>Setting up your wallet</h2><p className="muted intro">Approve the passkey prompt, then we&apos;ll deploy your wallet. This takes a few seconds.</p><button className="text-button" onClick={() => { setMessage(""); setScreen("verify"); }}>Cancel</button></>}
         {message && <p className="form-message">{message}</p>}
         <p className="legal">By continuing, you agree to the Solis terms. Your wallet is self-custodial.</p>

@@ -3,6 +3,12 @@ import { PrismaClient } from '@/generated/prisma/client';
 export const SESSION_COOKIE = 'solis_session';
 export const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
+// Between a correct OTP and a passkey check, a user holds only this short-lived "pending"
+// cookie. It grants nothing: every API route reads SESSION_COOKIE, never this one.
+export const PENDING_COOKIE = 'solis_pending';
+export const PENDING_TTL_MS = 5 * 60 * 1000;
+export const PENDING_ID_PREFIX = 'pending_';
+
 export function sessionCookieOptions(expires: Date) {
   return {
     httpOnly: true,
@@ -41,7 +47,8 @@ export async function getSessionFromRequest(
   request: Request,
 ) {
   const sessionId = readSessionId(request);
-  if (!sessionId) return null;
+  // A pending (post-OTP, pre-passkey) id must never work as a real session, even if copied into the session cookie.
+  if (!sessionId || sessionId.startsWith(PENDING_ID_PREFIX)) return null;
 
   const session = await prisma.session.findUnique({
     where: { id: sessionId },
@@ -49,5 +56,13 @@ export async function getSessionFromRequest(
   });
   if (!session || session.expiresAt <= new Date()) return null;
 
+  return session;
+}
+
+export async function getPendingSession(prisma: PrismaClient, request: Request) {
+  const sessionId = readCookie(request, PENDING_COOKIE);
+  if (!sessionId || !sessionId.startsWith(PENDING_ID_PREFIX)) return null;
+  const session = await prisma.session.findUnique({ where: { id: sessionId }, include: { user: true } });
+  if (!session || session.expiresAt <= new Date()) return null;
   return session;
 }
