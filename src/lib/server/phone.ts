@@ -31,3 +31,12 @@ export function hashPhone(phone: string): string {
 export function phoneHashFromInput(value: unknown): string {
   return hashPhone(normalizePhone(value));
 }
+
+/** Raw 32-byte digest (hex, no prefix) for on-chain use, from a stored `hmac_v1:<hex>` hash. */
+export function phoneHashToHex(phoneHash: string): string {
+  const hex = phoneHash.replace(/^hmac_v1:/, '').replace(/^0x/, '');
+  if (!/^[0-9a-f]{64}$/i.test(hex)) {
+    throw new Error('phoneHash must contain 32 bytes');
+  }
+  return hex.toLowerCase();
+}

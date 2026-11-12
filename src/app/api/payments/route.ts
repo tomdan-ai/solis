@@ -13,7 +13,9 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Session is invalid or expired' }, { status: 401 });
     }
 
-    const visiblePayments = [{ phoneHash: session.user.phoneHash }];
+    const visiblePayments: Array<{ phoneHash: string } | { senderWallet: string }> = [
+      { phoneHash: session.user.phoneHash },
+    ];
     if (session.user.walletAddress) {
       visiblePayments.push({ senderWallet: session.user.walletAddress });
     }

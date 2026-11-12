@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { createHash } from 'crypto';
 import { phoneHashFromInput } from '@/lib/server/phone';
+import { SESSION_COOKIE, SESSION_TTL_MS, sessionCookieOptions } from '@/lib/server/auth';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter });
@@ -97,7 +98,7 @@ export async function POST(request: Request) {
     }
 
     // Create session
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
     const session = await prisma.session.create({
       data: {
         userId,
@@ -105,14 +106,14 @@ export async function POST(request: Request) {
       },
     });
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       success: true,
       message: 'OTP verified successfully',
-      sessionId: session.id,
       userId,
-      // In a real app, set a signed cookie here
-      // setSessionCookie(session.id),
+      walletAddress: user?.walletAddress ?? null,
     });
+    response.cookies.set(SESSION_COOKIE, session.id, sessionCookieOptions(expiresAt));
+    return response;
   } catch (error) {
     console.error('OTP verify error:', error);
     return NextResponse.json(

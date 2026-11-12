@@ -4,6 +4,9 @@ const DEFAULT_MAX_USER_TRANSACTIONS = 20;
 const DEFAULT_MAX_USER_FEE_STROOPS = BigInt('1000000');
 const DEFAULT_GLOBAL_FEE_STROOPS = BigInt('10000000');
 
+export const DEPLOY_CONTRACT_ID = '__smart_account_deploy__';
+export const DEPLOY_FUNCTION = 'deploy_smart_account';
+
 type SponsorRequest = {
   contractId: string;
   functionName: string;
@@ -54,6 +57,14 @@ function allowedContractFunction(
   request: SponsorRequest,
   walletAddress: string | null,
 ): boolean {
+  if (
+    walletAddress === null &&
+    request.contractId === DEPLOY_CONTRACT_ID &&
+    request.functionName === DEPLOY_FUNCTION
+  ) {
+    return true;
+  }
+
   const escrowId = configuredAddress('SOLIS_ESCROW_CONTRACT_ID');
   const usdcId = configuredAddress('SOLIS_USDC_CONTRACT_ID');
   const smartAccountId = configuredAddress('SOLIS_SMART_ACCOUNT_CONTRACT_ID');

@@ -1,6 +1,7 @@
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@/generated/prisma/client';
 import { NextResponse } from 'next/server';
+import { getSessionFromRequest } from '@/lib/server/auth';
 import { evaluateSponsorPolicy } from '@/lib/server/sponsor-policy';
 import { RelayerClient } from 'smart-account-kit';
 
@@ -37,24 +38,8 @@ function isString(value: unknown, maxLength: number): value is string {
 
 export async function POST(request: Request) {
   try {
-    const authHeader = request.headers.get('authorization');
-    if (!authHeader?.startsWith('Bearer ')) {
-      return NextResponse.json(
-        { error: 'Authorization header required (Bearer token)' },
-        { status: 401 },
-      );
-    }
-
-    const sessionId = authHeader.slice('Bearer '.length).trim();
-    if (!sessionId) {
-      return NextResponse.json({ error: 'Session token is required' }, { status: 401 });
-    }
-
-    const session = await prisma.session.findUnique({
-      where: { id: sessionId },
-      include: { user: true },
-    });
-    if (!session || session.expiresAt <= new Date()) {
+    const session = await getSessionFromRequest(prisma, request);
+    if (!session) {
       return NextResponse.json({ error: 'Session is invalid or expired' }, { status: 401 });
     }
 

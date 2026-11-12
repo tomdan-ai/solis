@@ -17,7 +17,7 @@ export const metadata: Metadata = {
   description: "Send USDC to a phone number on Stellar.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
       lang="en"
