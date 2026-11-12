@@ -188,10 +188,18 @@ export async function prepareInvocation(wallet: string, operation: StellarOperat
 /** USDC balance (7-decimal stroop units as a string) for a wallet via a read-only simulation. */
 export async function getUsdcBalance(wallet: string): Promise<string> {
   const token = process.env.SOLIS_USDC_CONTRACT_ID;
-  const attestorSecret = process.env.SOLIS_ATTESTOR_SECRET;
-  if (!token || !attestorSecret) return '0';
+  if (!token) return '0';
   const server = new rpc.Server(rpcUrl);
-  const account = await server.getAccount(Keypair.fromSecret(attestorSecret).publicKey());
+  // Read-only simulation only needs *some* funded account as the source. A classic (G...)
+  // wallet can use itself; smart-account (C...) wallets fall back to the attestor key.
+  let sourceAddress: string | null = null;
+  if (wallet.startsWith('G')) {
+    sourceAddress = wallet;
+  } else if (process.env.SOLIS_ATTESTOR_SECRET) {
+    sourceAddress = Keypair.fromSecret(process.env.SOLIS_ATTESTOR_SECRET).publicKey();
+  }
+  if (!sourceAddress) return '0';
+  const account = await server.getAccount(sourceAddress);
   const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase })
     .addOperation(new Contract(token).call('balance', Address.fromString(wallet).toScVal()))
     .setTimeout(30)
