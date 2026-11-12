@@ -3,7 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { formatUsdc, getKit, toStroops } from "@/lib/client/kit";
 
-type Screen = "loading" | "welcome" | "verify" | "deploying" | "wallet";
+type Screen = "loading" | "welcome" | "verify" | "passkey" | "deploying" | "wallet";
 type Tab = "home" | "receive" | "settings";
 type Payment = {
   id: string;
@@ -106,7 +106,7 @@ export default function Home() {
     } catch (error) {
       console.error("Wallet setup failed:", error);
       setMessage(error instanceof Error ? error.message : "Wallet setup failed");
-      setScreen("verify");
+      setScreen("passkey");
     }
   }, [phone]);
 
@@ -119,8 +119,7 @@ export default function Home() {
           setWallet(session.walletAddress);
           setScreen("wallet");
         } else {
-          setScreen("verify");
-          setMessage("Finish setting up your wallet.");
+          setScreen("passkey");
         }
       })
       .catch(() => setScreen("welcome"));
@@ -160,7 +159,8 @@ export default function Home() {
         setWallet(data.walletAddress);
         setScreen("wallet");
       } else {
-        await deployWallet();
+        // Passkey creation must start from a direct click, so it gets its own screen.
+        setScreen("passkey");
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not verify code");
@@ -329,7 +329,8 @@ export default function Home() {
         {screen === "verify" && <><div className="step-count">02 <span>/ 02</span></div><h2>Enter your code</h2><p className="muted intro">A six-digit code is on its way to {phone || "your phone"}.</p>
           <form onSubmit={verifyCode} className="auth-form"><label htmlFor="code">Verification code</label><input id="code" className="code-input" value={code} onChange={(e) => setCode(e.target.value)} placeholder="000000" inputMode="numeric" autoComplete="one-time-code" maxLength={6} required /><button className="button button-dark" disabled={busy}>{busy ? "Verifying..." : "Open my wallet"}</button></form>
           <button className="text-button" onClick={() => setScreen("welcome")}>Use a different number</button>
-          {wallet === "" && message === "Finish setting up your wallet." && <button className="button button-dark" onClick={deployWallet}>Create wallet now</button>}</>}
+          </>}
+        {screen === "passkey" && <><div className="step-count">03 <span>/ 03</span></div><h2>Create your wallet</h2><p className="muted intro">Your phone is verified. Next, create a passkey. It is the only key to your wallet, so it stays on your device.</p><button className="button button-dark" onClick={deployWallet}>Create passkey &amp; wallet</button></>}
         {screen === "deploying" && <><h2>Setting up your wallet</h2><p className="muted intro">Approve the passkey prompt, then we&apos;ll deploy your wallet. This takes a few seconds.</p><button className="text-button" onClick={() => { setMessage(""); setScreen("verify"); }}>Cancel</button></>}
         {message && <p className="form-message">{message}</p>}
         <p className="legal">By continuing, you agree to the Solis terms. Your wallet is self-custodial.</p>
