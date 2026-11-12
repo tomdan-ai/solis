@@ -33,7 +33,12 @@ async function api<T = Record<string, unknown>>(path: string, init?: RequestInit
 }
 
 /** prepare (server simulates) -> passkey signs auth entries -> sponsor proxy submits. */
-async function submitOperation(operation: Operation): Promise<string> {
+async function submitOperation(operation: Operation, custodial: boolean): Promise<string> {
+  if (custodial) {
+    // Demo mode: the server holds the key, applies the policy, signs and submits.
+    const result = await api<{ hash: string }>("/api/transactions/send", { method: "POST", body: JSON.stringify({ operation }) });
+    return result.hash;
+  }
   const kit = getKit();
   const prepared = await api<{ func: string; auth: string[]; latestLedger: number }>("/api/transactions/prepare", {
     method: "POST",
@@ -72,6 +77,7 @@ export default function Home() {
   const [sendAmount, setSendAmount] = useState("");
   const [recipient, setRecipient] = useState<{ registered: boolean; walletAddress: string | null; phoneHash: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [custodial, setCustodial] = useState(false);
   const [now, setNow] = useState(0);
 
   const refresh = useCallback(async () => {
@@ -87,10 +93,17 @@ export default function Home() {
     }
   }, []);
 
-  const deployWallet = useCallback(async () => {
+  const deployWallet = useCallback(async (serverHeld: boolean = custodial) => {
     setScreen("deploying");
-    setMessage("Creating your passkey and deploying your wallet...");
+    setMessage(serverHeld ? "Creating your wallet..." : "Creating your passkey and deploying your wallet...");
     try {
+      if (serverHeld) {
+        const created = await api<{ walletAddress: string }>("/api/wallets/create", { method: "POST" });
+        setWallet(created.walletAddress);
+        setMessage("");
+        setScreen("wallet");
+        return;
+      }
       const kit = getKit();
       const created = await Promise.race([
         kit.createWallet("Solis", phone || "Solis wallet", { autoSubmit: true }),
@@ -108,13 +121,14 @@ export default function Home() {
       setMessage(error instanceof Error ? error.message : "Wallet setup failed");
       setScreen("passkey");
     }
-  }, [phone]);
+  }, [phone, custodial]);
 
   useEffect(() => {
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
-    api<{ walletAddress: string | null; network: string }>("/api/auth/session")
+    api<{ walletAddress: string | null; network: string; custodial: boolean }>("/api/auth/session")
       .then((session) => {
         setNetwork(session.network);
+        setCustodial(session.custodial);
         if (session.walletAddress) {
           setWallet(session.walletAddress);
           setScreen("wallet");
@@ -151,13 +165,17 @@ export default function Home() {
     setBusy(true);
     setMessage("");
     try {
-      const data = await api<{ walletAddress: string | null }>("/api/auth/otp/verify", {
+      const data = await api<{ walletAddress: string | null; custodial: boolean }>("/api/auth/otp/verify", {
         method: "POST",
         body: JSON.stringify({ phone, code }),
       });
+      setCustodial(data.custodial);
       if (data.walletAddress) {
         setWallet(data.walletAddress);
         setScreen("wallet");
+      } else if (data.custodial) {
+        // Demo mode: no passkey step; the server creates the wallet.
+        await deployWallet(true);
       } else {
         // Passkey creation must start from a direct click, so it gets its own screen.
         setScreen("passkey");
@@ -200,7 +218,7 @@ export default function Home() {
       const operation: Operation = recipient.registered && recipient.walletAddress
         ? { kind: "transfer", recipient: recipient.walletAddress, amount }
         : { kind: "deposit", phoneHash: recipient.phoneHash, amount, expiresAt: Math.floor(Date.now() / 1000) + REFUND_WINDOW_SECONDS };
-      await submitOperation(operation);
+      await submitOperation(operation, custodial);
       setMessage(recipient.registered ? "Payment sent." : "Payment held in escrow until they join.");
       setRecipient(null);
       setSendPhone("");
@@ -217,7 +235,7 @@ export default function Home() {
     setBusy(true);
     setMessage(`Confirm ${kind} with your passkey...`);
     try {
-      await submitOperation({ kind, paymentId: payment.onchainId });
+      await submitOperation({ kind, paymentId: payment.onchainId }, custodial);
       setMessage(kind === "claim" ? "Claimed. Funds are on their way to your wallet." : "Refund submitted.");
       setTimeout(refresh, 4000);
     } catch (error) {
@@ -306,13 +324,15 @@ export default function Home() {
           <section className="panel"><div className="panel-heading"><div><p className="eyebrow">Settings</p><h2>Wallet</h2></div></div>
             <p className="muted">Network: {network}</p>
             <p className="muted" style={{ wordBreak: "break-all" }}>Address: {wallet}</p>
-            <p className="muted">Recovery: your passkey is the only key to this wallet. If every device and synced passkey is lost, funds cannot be recovered in this MVP.</p>
-            <button className="button button-dark" disabled={busy} onClick={async () => {
-              setBusy(true);
-              try { await getKit().connectWallet({ prompt: true }); setMessage("Backup passkey support: add a second passkey from a synced device, then reconnect here."); }
-              catch (e) { setMessage(e instanceof Error ? e.message : "Could not reach passkey"); }
-              finally { setBusy(false); }
-            }}>Verify passkey</button>
+            {custodial
+              ? <p className="muted">Demo wallet: the server holds this wallet&apos;s key on testnet. This mode is disabled in production.</p>
+              : <><p className="muted">Recovery: your passkey is the only key to this wallet. If every device and synced passkey is lost, funds cannot be recovered in this MVP.</p>
+                <button className="button button-dark" disabled={busy} onClick={async () => {
+                  setBusy(true);
+                  try { await getKit().connectWallet({ prompt: true }); setMessage("Passkey verified."); }
+                  catch (e) { setMessage(e instanceof Error ? e.message : "Could not reach passkey"); }
+                  finally { setBusy(false); }
+                }}>Verify passkey</button></>}
             <button className="text-button" onClick={logout}>Log out</button>
           </section>
         )}
@@ -330,7 +350,7 @@ export default function Home() {
           <form onSubmit={verifyCode} className="auth-form"><label htmlFor="code">Verification code</label><input id="code" className="code-input" value={code} onChange={(e) => setCode(e.target.value)} placeholder="000000" inputMode="numeric" autoComplete="one-time-code" maxLength={6} required /><button className="button button-dark" disabled={busy}>{busy ? "Verifying..." : "Open my wallet"}</button></form>
           <button className="text-button" onClick={() => setScreen("welcome")}>Use a different number</button>
           </>}
-        {screen === "passkey" && <><div className="step-count">03 <span>/ 03</span></div><h2>Create your wallet</h2><p className="muted intro">Your phone is verified. Next, create a passkey. It is the only key to your wallet, so it stays on your device.</p><button className="button button-dark" onClick={deployWallet}>Create passkey &amp; wallet</button></>}
+        {screen === "passkey" && <><div className="step-count">03 <span>/ 03</span></div><h2>Create your wallet</h2><p className="muted intro">{custodial ? "Your phone is verified. We'll create a testnet demo wallet for you." : "Your phone is verified. Next, create a passkey. It is the only key to your wallet, so it stays on your device."}</p><button className="button button-dark" onClick={() => deployWallet()}>{custodial ? "Create my wallet" : "Create passkey & wallet"}</button></>}
         {screen === "deploying" && <><h2>Setting up your wallet</h2><p className="muted intro">Approve the passkey prompt, then we&apos;ll deploy your wallet. This takes a few seconds.</p><button className="text-button" onClick={() => { setMessage(""); setScreen("verify"); }}>Cancel</button></>}
         {message && <p className="form-message">{message}</p>}
         <p className="legal">By continuing, you agree to the Solis terms. Your wallet is self-custodial.</p>

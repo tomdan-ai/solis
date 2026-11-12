@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { createHash } from 'crypto';
 import { phoneHashFromInput } from '@/lib/server/phone';
+import { custodialEnabled } from '@/lib/server/custodial';
 import { SESSION_COOKIE, SESSION_TTL_MS, sessionCookieOptions } from '@/lib/server/auth';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
@@ -111,6 +112,7 @@ export async function POST(request: Request) {
       message: 'OTP verified successfully',
       userId,
       walletAddress: user?.walletAddress ?? null,
+      custodial: custodialEnabled(),
     });
     response.cookies.set(SESSION_COOKIE, session.id, sessionCookieOptions(expiresAt));
     return response;

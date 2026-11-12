@@ -31,6 +31,8 @@ model User {
   id            String   @id @default(uuid())
   phoneHash     String   @unique
   walletAddress String?  @unique
+  // Demo-only server-held wallets (CUSTODIAL_WALLETS=true): AES-256-GCM encrypted secret key.
+  walletSecretEnc String?
   createdAt     DateTime @default(now())
   sessions      Session[]
   passkeys      Passkey[]

@@ -102,7 +102,7 @@ export async function buildPreparedTransaction(
   };
 }
 
-async function sendAndConfirm(server: rpc.Server, rawTx: Parameters<rpc.Server['sendTransaction']>[0]) {
+export async function sendAndConfirm(server: rpc.Server, rawTx: Parameters<rpc.Server['sendTransaction']>[0]) {
   const sent = await server.sendTransaction(rawTx);
   if (sent.status === 'ERROR') {
     throw new Error(`Transaction rejected: ${JSON.stringify(sent.errorResult)}`);
