@@ -4,6 +4,8 @@
 import { createHash, randomBytes } from 'crypto';
 import { Client } from 'pg';
 import { hashPhone } from '../src/lib/server/phone';
+import { challengeFor, toBase64Url } from '../src/lib/server/confirm';
+import type { StellarOperation } from '../src/lib/server/stellar';
 
 const APP = 'http://localhost:3000';
 let failures = 0;
@@ -62,6 +64,32 @@ async function main() {
   check('Login options returns a challenge for this user\'s passkey', opts.status === 200 && Boolean(optsBody.challenge) && optsBody.allowCredentials?.length === 1);
   const bad = await post('/api/auth/passkey/login/verify', { id: 'not-a-real-credential', rawId: 'x', type: 'public-key', response: {}, clientExtensionResults: {} }, pending);
   check('A wrong/forged assertion is refused and gives no session', bad.status >= 400 && !cookieOf(bad, 'solis_session'), `status ${bad.status}`);
+
+  // 5. Payment approval: with a passkey, no payment moves without an approval bound to that exact payment.
+  console.log('\nPayment approval gate');
+  const credentialId = (await db.query(`select "credentialId" from "Passkey" where "userId"=$1`, [userId])).rows[0].credentialId as string;
+  await db.query(`update "User" set "walletAddress"=$2, "walletSecretEnc"='unused' where id=$1`, [userId, `G${randomBytes(27).toString('hex').toUpperCase().slice(0, 55)}`]);
+  const full = await db.query(`insert into "Session" (id,"userId","expiresAt") values (gen_random_uuid(),$1,now()+interval '10 minutes') returning id`, [userId]);
+  const fullCookie = `solis_session=${full.rows[0].id}`;
+  const op: StellarOperation = { kind: 'transfer', sender: '', recipient: `G${'A'.repeat(55)}`, amount: '10000000' };
+  const otherOp: StellarOperation = { ...op, amount: '90000000' };
+
+  const noApproval = await post('/api/transactions/send', { operation: op }, fullCookie);
+  check('Payment without approval is refused', noApproval.status === 400 && /Passkey confirmation required/.test((await noApproval.json()).error));
+
+  const conf = await post('/api/auth/passkey/confirm/options', { operation: op }, fullCookie);
+  const confBody = await conf.json();
+  check('Confirm options need a real session', (await post('/api/auth/passkey/confirm/options', { operation: op })).status === 401);
+  const expected = toBase64Url(challengeFor(op, confBody.nonce));
+  check('Challenge is bound to this exact payment', conf.status === 200 && confBody.options.challenge === expected);
+
+  const fake = { id: credentialId, rawId: credentialId, type: 'public-key', response: { clientDataJSON: 'x', authenticatorData: 'x', signature: 'x' }, clientExtensionResults: {} };
+  const swapped = await post('/api/transactions/send', { operation: otherOp, approval: { assertion: fake, nonce: confBody.nonce } }, fullCookie);
+  check('Approval for one payment cannot authorize another', swapped.status === 400 && /does not match/.test((await swapped.json()).error));
+
+  const forged = await post('/api/transactions/send', { operation: op, approval: { assertion: fake, nonce: confBody.nonce } }, fullCookie);
+  const forgedBody = await forged.json();
+  check('Forged passkey signature is refused', forged.status === 400 && !forgedBody.hash && !forgedBody.success, forgedBody.error);
 
   await db.query(`delete from "Passkey" where "userId"=$1`, [userId]);
   await db.end();

@@ -3,6 +3,8 @@ import { PrismaClient } from '@/generated/prisma/client';
 import { NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/server/auth';
 import { custodialEnabled, signAndSubmitAsUser } from '@/lib/server/custodial';
+import { requirePasskeyApproval } from '@/lib/server/confirm';
+import type { Approval } from '@/lib/server/confirm';
 import { evaluateSponsorPolicy } from '@/lib/server/sponsor-policy';
 import { buildPreparedTransaction, StellarOperation } from '@/lib/server/stellar';
 import { simCredit, simDebit, simEscrowExpirySeconds, simRecord, simUsdcEnabled } from '@/lib/server/sim-usdc';
@@ -81,10 +83,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Wallet has not been created yet' }, { status: 409 });
     }
 
-    const { operation } = (await request.json()) as { operation?: StellarOperation };
+    const { operation, approval } = (await request.json()) as { operation?: StellarOperation; approval?: Approval };
     if (!operation || !['transfer', 'deposit', 'claim', 'refund'].includes(operation.kind)) {
       return NextResponse.json({ error: 'A valid operation is required' }, { status: 400 });
     }
+    // Users with a passkey must approve this exact payment with it before anything moves.
+    await requirePasskeyApproval(prisma, session, operation, approval);
     if (operation.kind === 'transfer' || operation.kind === 'deposit') operation.sender = wallet;
     if (operation.kind === 'claim' || operation.kind === 'refund') {
       const payment = await prisma.escrowPayment.findUnique({ where: { onchainId: BigInt(operation.paymentId) } });

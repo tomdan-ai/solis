@@ -1,5 +1,7 @@
-// Dev check for SIMULATE_USDC mode against the running app. Uses temporary sessions for two existing wallets.
+// Dev check for SIMULATE_USDC mode against the running app. Creates two throwaway users WITHOUT passkeys
+// (a script cannot produce a real passkey approval, and users with a passkey must approve every payment).
 //   npx tsx --env-file=.env scripts/try-sim-usdc.ts
+import { randomBytes } from 'crypto';
 import { Client } from 'pg';
 
 const APP = 'http://localhost:3000';
@@ -12,10 +14,16 @@ function check(name: string, ok: boolean, detail = '') {
 async function main() {
   const db = new Client({ connectionString: process.env.DATABASE_URL });
   await db.connect();
-  const users = (await db.query(
-    `select id, "phoneHash", "walletAddress" from "User" where "walletAddress" is not null and "walletSecretEnc" is not null order by "createdAt" limit 2`,
-  )).rows as Array<{ id: string; phoneHash: string; walletAddress: string }>;
-  if (users.length < 2) throw new Error('Need two users with server-held wallets');
+  const users: Array<{ id: string; phoneHash: string; walletAddress: string }> = [];
+  for (let i = 0; i < 2; i++) {
+    const tag = randomBytes(8).toString('hex');
+    const wallet = `G${randomBytes(28).toString('hex').toUpperCase().slice(0, 55)}`; // fake address: sim mode never touches the chain
+    const row = await db.query(
+      `insert into "User" (id,"phoneHash","walletAddress","walletSecretEnc") values (gen_random_uuid(), $1, $2, 'unused') returning id`,
+      [`hmac_v1:sim-test-${tag}`, wallet],
+    );
+    users.push({ id: row.rows[0].id, phoneHash: `hmac_v1:sim-test-${tag}`, walletAddress: wallet });
+  }
   const [a, b] = users;
 
   const sessions: string[] = [];

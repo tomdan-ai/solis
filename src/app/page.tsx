@@ -61,10 +61,14 @@ async function api<T = Record<string, unknown>>(path: string, init?: RequestInit
 }
 
 /** prepare (server simulates) -> passkey signs auth entries -> sponsor proxy submits. */
-async function submitOperation(operation: Operation, custodial: boolean): Promise<string> {
+type AuthOptions = Parameters<typeof startAuthentication>[0]["optionsJSON"];
+type Prepared = { options: AuthOptions; nonce: string };
+type Approval = { assertion: Awaited<ReturnType<typeof startAuthentication>>; nonce: string };
+
+async function submitOperation(operation: Operation, custodial: boolean, approval?: Approval): Promise<string> {
   if (custodial) {
     // Demo mode: the server holds the key, applies the policy, signs and submits.
-    const result = await api<{ hash: string }>("/api/transactions/send", { method: "POST", body: JSON.stringify({ operation }) });
+    const result = await api<{ hash: string }>("/api/transactions/send", { method: "POST", body: JSON.stringify({ operation, approval }) });
     return result.hash;
   }
   const kit = getKit();
@@ -111,6 +115,7 @@ export default function Home() {
   const [copied, setCopied] = useState("");
   const [custodial, setCustodial] = useState(false);
   const [hasPasskey, setHasPasskey] = useState(false);
+  const [plan, setPlan] = useState<{ operation: Operation; approval: Prepared | null } | null>(null);
   const [now, setNow] = useState(0);
 
   const refresh = useCallback(async () => {
@@ -333,13 +338,41 @@ export default function Home() {
     setScreen("welcome");
   }
 
+  // With a passkey, every payment must be approved by it. The server issues a challenge bound to
+  // this exact payment; fetching it ahead of the click keeps the prompt a direct result of the click.
+  async function prepareApproval(operation: Operation): Promise<Prepared | null> {
+    if (!custodial || !hasPasskey) return null;
+    const { options, nonce } = await api<Prepared>("/api/auth/passkey/confirm/options", { method: "POST", body: JSON.stringify({ operation }) });
+    return { options, nonce };
+  }
+
+  async function approve(prepared: Prepared | null): Promise<Approval | undefined> {
+    if (!prepared) return undefined;
+    return { assertion: await startAuthentication({ optionsJSON: prepared.options }), nonce: prepared.nonce };
+  }
+
+  function buildSendOperation(info: { registered: boolean; walletAddress: string | null; phoneHash: string }, amount: string): Operation {
+    return info.registered && info.walletAddress
+      ? { kind: "transfer", recipient: info.walletAddress, amount }
+      : { kind: "deposit", phoneHash: info.phoneHash, amount, expiresAt: Math.floor(Date.now() / 1000) + REFUND_WINDOW_SECONDS };
+  }
+
+  const sameOperation = (x: Operation, y: Operation) => {
+    const key = (o: Operation) => JSON.stringify(o.kind === "transfer" ? [o.kind, o.recipient, o.amount] : o.kind === "deposit" ? [o.kind, o.phoneHash, o.amount] : [o.kind, o.paymentId]);
+    return key(x) === key(y);
+  };
+
   async function lookupRecipient(event: FormEvent) {
     event.preventDefault();
     setMessage("");
-    if (!toStroops(sendAmount)) return setMessage("Enter a valid USDC amount (up to 7 decimals).");
+    const amount = toStroops(sendAmount);
+    if (!amount) return setMessage("Enter a valid USDC amount (up to 7 decimals).");
     setBusy(true);
     try {
-      setRecipient(await api(`/api/resolve?phone=${encodeURIComponent(sendPhone)}`));
+      const info = await api<{ registered: boolean; walletAddress: string | null; phoneHash: string }>(`/api/resolve?phone=${encodeURIComponent(sendPhone)}`);
+      setRecipient(info);
+      const operation = buildSendOperation(info, amount);
+      setPlan({ operation, approval: await prepareApproval(operation).catch(() => null) });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Recipient lookup failed");
     } finally {
@@ -351,19 +384,22 @@ export default function Home() {
     const amount = toStroops(sendAmount);
     if (!recipient || !amount) return;
     setBusy(true);
-    setMessage("Confirm with your passkey...");
+    setMessage(hasPasskey && custodial ? "Approve this payment with your passkey..." : "Sending...");
     try {
-      const operation: Operation = recipient.registered && recipient.walletAddress
-        ? { kind: "transfer", recipient: recipient.walletAddress, amount }
-        : { kind: "deposit", phoneHash: recipient.phoneHash, amount, expiresAt: Math.floor(Date.now() / 1000) + REFUND_WINDOW_SECONDS };
-      await submitOperation(operation, custodial);
+      const operation = buildSendOperation(recipient, amount);
+      // Reuse the challenge fetched at lookup time if the payment is unchanged; otherwise fetch a fresh one.
+      const prepared = plan && sameOperation(plan.operation, operation) ? plan.approval : await prepareApproval(operation);
+      const approval = await approve(prepared);
+      await submitOperation(operation, custodial, approval);
       setMessage(recipient.registered ? "Payment sent." : "Payment held in escrow until they join.");
       setRecipient(null);
+      setPlan(null);
       setSendPhone("");
       setSendAmount("");
-      setTimeout(refresh, 4000);
+      setTimeout(refresh, 1500);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Payment failed");
+      setPlan(null);
+      setMessage(passkeyMessage(error, "Payment failed"));
     } finally {
       setBusy(false);
     }
@@ -371,13 +407,15 @@ export default function Home() {
 
   async function settle(kind: "claim" | "refund", payment: Payment) {
     setBusy(true);
-    setMessage(`Confirm ${kind} with your passkey...`);
+    setMessage(hasPasskey && custodial ? `Approve the ${kind} with your passkey...` : `Submitting ${kind}...`);
     try {
-      await submitOperation({ kind, paymentId: payment.onchainId }, custodial);
-      setMessage(kind === "claim" ? "Claimed. Funds are on their way to your wallet." : "Refund submitted.");
-      setTimeout(refresh, 4000);
+      const operation: Operation = { kind, paymentId: payment.onchainId };
+      const approval = await approve(await prepareApproval(operation));
+      await submitOperation(operation, custodial, approval);
+      setMessage(kind === "claim" ? "Claimed. Funds are in your wallet." : "Refund complete.");
+      setTimeout(refresh, 1500);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : `Could not ${kind}`);
+      setMessage(passkeyMessage(error, `Could not ${kind}`));
     } finally {
       setBusy(false);
     }
@@ -440,7 +478,7 @@ export default function Home() {
                 <div className={`recipient-note ${recipient.registered ? "found" : "new"}`}>
                   <strong>{recipient.registered ? "Solis wallet found" : "They will need to claim"}</strong>
                   <span>{recipient.registered ? `Send $${sendAmount} USDC directly.` : `$${sendAmount} waits in escrow until they join. You can refund it after it expires.`}</span>
-                  <button className="button button-dark" disabled={busy} onClick={confirmSend}>{busy ? "Waiting for passkey..." : "Confirm with passkey"}</button>
+                  <button className="button button-dark" disabled={busy} onClick={confirmSend}>{busy ? "Waiting for passkey..." : hasPasskey || !custodial ? "Confirm with passkey" : "Confirm payment"}</button>
                 </div>
               )}
             </section>
