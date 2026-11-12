@@ -61,6 +61,10 @@ export async function POST(request: Request) {
     }
   } catch (error) {
     console.error('Custodial send error:', error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Transaction failed' }, { status: 400 });
+    // Pass through simulation/chain messages, but never internal (database) errors.
+    const message = error instanceof Error && !/prisma|invocation/i.test(error.message) && error.message.length < 300
+      ? error.message
+      : 'Transaction failed';
+    return NextResponse.json({ error: message }, { status: 400 });
   }
 }
