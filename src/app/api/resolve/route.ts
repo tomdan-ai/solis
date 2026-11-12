@@ -1,7 +1,8 @@
 import { PrismaClient } from '@/generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { NextResponse } from 'next/server';
-import { createHash } from 'crypto';
+import { getSessionFromRequest } from '@/lib/server/auth';
+import { phoneHashFromInput } from '@/lib/server/phone';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter });
@@ -18,25 +19,23 @@ export async function GET(request: Request) {
       );
     }
 
-    // Normalize to E.164 format
-    const normalizedPhone = phone.replace(/^\+/, '').replace(/\D/g, '');
-    const e164Phone = `+${normalizedPhone}`;
+    const session = await getSessionFromRequest(prisma, request);
+    if (!session) {
+      return NextResponse.json({ error: 'Session is invalid or expired' }, { status: 401 });
+    }
 
-    // Verify authenticated session
-    const authHeader = request.headers.get('authorization');
-    if (!authHeader?.startsWith('Bearer ')) {
+    let phoneHash: string;
+    try {
+      phoneHash = phoneHashFromInput(phone);
+    } catch (error) {
       return NextResponse.json(
-        { error: 'Authorization header required (Bearer token)' },
-        { status: 401 }
+        { error: error instanceof Error ? error.message : 'Invalid phone number' },
+        { status: 400 },
       );
     }
 
-    const token = authHeader.substring(7);
-    // Verify session token - in production, validate signed cookie/jwt
-    // For now, check if user exists in DB
-
     const user = await prisma.user.findUnique({
-      where: { phoneHash: e164Phone },
+      where: { phoneHash },
     });
 
     if (!user) {
@@ -48,7 +47,7 @@ export async function GET(request: Request) {
 
     // Rate limit: check recent resolve requests
     const recentResolve = await prisma.rateLimit.findFirst({
-      where: { key: `resolve:${e164Phone}` },
+      where: { key: `resolve:${session.userId}:${phoneHash}` },
     });
 
     if (recentResolve && recentResolve.count >= 10) {
@@ -67,7 +66,7 @@ export async function GET(request: Request) {
     } else {
       await prisma.rateLimit.create({
         data: {
-          key: `resolve:${e164Phone}`,
+          key: `resolve:${session.userId}:${phoneHash}`,
           count: 1,
           windowStart: new Date(),
         },

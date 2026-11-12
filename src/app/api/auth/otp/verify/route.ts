@@ -2,6 +2,7 @@ import { PrismaClient } from '@/generated/prisma/client';
 import { NextResponse } from 'next/server';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { createHash } from 'crypto';
+import { phoneHashFromInput } from '@/lib/server/phone';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter });
@@ -21,13 +22,19 @@ export async function POST(request: Request) {
       );
     }
 
-    // Normalize to E.164 format
-    const normalizedPhone = phone.replace(/^\+/, '').replace(/\D/g, '');
-    const e164Phone = `+${normalizedPhone}`;
+    let phoneHash: string;
+    try {
+      phoneHash = phoneHashFromInput(phone);
+    } catch (error) {
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : 'Invalid phone number' },
+        { status: 400 },
+      );
+    }
 
     // Find the OTP challenge
     const otpChallenge = await prisma.otpChallenge.findFirst({
-      where: { phoneHash: e164Phone },
+      where: { phoneHash },
     });
 
     if (!otpChallenge) {
@@ -71,7 +78,7 @@ export async function POST(request: Request) {
     // OTP verified - create or update user session
     // Check if user exists
     const user = await prisma.user.findUnique({
-      where: { phoneHash: e164Phone },
+      where: { phoneHash },
     });
 
     let userId: string;
@@ -82,7 +89,7 @@ export async function POST(request: Request) {
       // Create new user
       const newUser = await prisma.user.create({
         data: {
-          phoneHash: e164Phone,
+          phoneHash,
           walletAddress: null, // Will be set during onboarding
         },
       });

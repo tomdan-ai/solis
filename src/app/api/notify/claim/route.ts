@@ -1,12 +1,18 @@
 import { PrismaClient } from '@/generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { NextResponse } from 'next/server';
+import { getSessionFromRequest } from '@/lib/server/auth';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter });
 
 export async function POST(request: Request) {
   try {
+    const session = await getSessionFromRequest(prisma, request);
+    if (!session) {
+      return NextResponse.json({ error: 'Session is invalid or expired' }, { status: 401 });
+    }
+
     const { paymentId, claimLink } = await request.json();
 
     if (!paymentId) {
@@ -26,6 +32,10 @@ export async function POST(request: Request) {
         { error: 'Payment not found' },
         { status: 404 }
       );
+    }
+
+    if (!session.user.walletAddress || payment.senderWallet !== session.user.walletAddress) {
+      return NextResponse.json({ error: 'You cannot notify this payment' }, { status: 403 });
     }
 
     // Check if payment is already claimed or refunded

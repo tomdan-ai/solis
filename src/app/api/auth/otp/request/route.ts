@@ -1,7 +1,8 @@
 import { PrismaClient } from '@/generated/prisma/client';
 import { NextResponse } from 'next/server';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { createHash } from 'crypto';
+import { createHash, randomInt } from 'crypto';
+import { phoneHashFromInput } from '@/lib/server/phone';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter });
@@ -21,17 +22,23 @@ export async function POST(request: Request) {
       );
     }
 
-    // Normalize to E.164 format
-    const normalizedPhone = phone.replace(/^\+/, '').replace(/\D/g, '');
-    const e164Phone = `+${normalizedPhone}`;
+    let phoneHash: string;
+    try {
+      phoneHash = phoneHashFromInput(phone);
+    } catch (error) {
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : 'Invalid phone number' },
+        { status: 400 },
+      );
+    }
 
     // Generate a 6-digit OTP code
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = randomInt(100000, 1000000).toString();
     const codeHash = hashCode(code);
 
     // Check if there's an existing OTP challenge for this phone
     const existingOtp = await prisma.otpChallenge.findFirst({
-      where: { phoneHash: e164Phone },
+      where: { phoneHash },
     });
 
     if (existingOtp) {
@@ -48,7 +55,7 @@ export async function POST(request: Request) {
       // Create new OTP challenge
       await prisma.otpChallenge.create({
         data: {
-          phoneHash: e164Phone,
+          phoneHash,
           codeHash,
           expiresAt: new Date(Date.now() + 5 * 60 * 1000),
           attempts: 0,
@@ -58,7 +65,7 @@ export async function POST(request: Request) {
 
     // TODO: Send OTP via SMS provider (Twilio, etc.)
     // For now, log the code for development/testing
-    console.log(`OTP for ${e164Phone}: ${code}`);
+    console.log(`OTP generated for ${phoneHash}`);
 
     return NextResponse.json({
       success: true,

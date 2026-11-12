@@ -1,48 +1,37 @@
 import { PrismaClient } from '@/generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { NextResponse } from 'next/server';
-import { createHash } from 'crypto';
+import { getSessionFromRequest } from '@/lib/server/auth';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter });
 
 export async function POST(request: Request) {
   try {
-    const { phoneHash, walletAddress, signature } = await request.json();
+    const session = await getSessionFromRequest(prisma, request);
+    if (!session) {
+      return NextResponse.json({ error: 'Session is invalid or expired' }, { status: 401 });
+    }
 
-    if (!phoneHash || !walletAddress) {
+    const { walletAddress } = await request.json();
+
+    if (typeof walletAddress !== 'string' || walletAddress.length === 0) {
       return NextResponse.json(
-        { error: 'phoneHash and walletAddress are required' },
+        { error: 'walletAddress is required' },
         { status: 400 }
       );
     }
 
-    // Verify the phone hash matches the wallet
-    // In a full implementation, verify the signature from the passkey signer
-    // For now, just bind the wallet to the phone hash
-
-    // Check if phone hash already has a wallet
-    const existingUser = await prisma.user.findUnique({
-      where: { phoneHash },
-    });
-
-    if (existingUser && existingUser.walletAddress) {
+    if (session.user.walletAddress) {
       return NextResponse.json(
         { error: 'Phone number already has a wallet registered' },
         { status: 409 }
       );
     }
 
-    // Update or create user with wallet address
-    const user = await prisma.user.upsert({
-      where: { phoneHash },
-      update: {
-        walletAddress,
-      },
-      create: {
-        phoneHash,
-        walletAddress,
-      },
+    const user = await prisma.user.update({
+      where: { id: session.userId },
+      data: { walletAddress },
     });
 
     return NextResponse.json({

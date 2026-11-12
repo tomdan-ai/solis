@@ -1,39 +1,25 @@
 import { PrismaClient } from '@/generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { NextResponse } from 'next/server';
+import { getSessionFromRequest } from '@/lib/server/auth';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter });
 
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url);
-
-    // Check authentication
-    const authHeader = request.headers.get('authorization');
-    if (!authHeader?.startsWith('Bearer ')) {
-      return NextResponse.json(
-        { error: 'Authorization header required (Bearer token)' },
-        { status: 401 }
-      );
+    const session = await getSessionFromRequest(prisma, request);
+    if (!session) {
+      return NextResponse.json({ error: 'Session is invalid or expired' }, { status: 401 });
     }
 
-    const token = authHeader.substring(7);
-    // In production, validate the session token/JWT
-
-    // Get user ID from token - for now, get all payments (will be filtered by user in prod)
-    const userId = searchParams.get('userId') || '';
-
-    // Build where clause for payments
-    const where: any = {};
-
-    if (userId) {
-      where.phoneHash = userId; // Simplified: filter by phone hash
+    const visiblePayments = [{ phoneHash: session.user.phoneHash }];
+    if (session.user.walletAddress) {
+      visiblePayments.push({ senderWallet: session.user.walletAddress });
     }
 
-    // Get escrow payments with their status
     const payments = await prisma.escrowPayment.findMany({
-      where,
+      where: { OR: visiblePayments },
       take: 50, // Limit to 50 most recent
     });
 
