@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+    "contracts/phone_registry",
+    "contracts/pay_escrow",
+]
+
+[profile.release]
+overflow-checks = true

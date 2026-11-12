@@ -1,0 +1,108 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Rate limit tracking
+model RateLimit {
+  key      String  @id
+  count    Int
+  windowStart DateTime
+}
+
+// Payment status enum
+enum PaymentStatus {
+  PENDING
+  CLAIMED
+  REFUNDED
+}
+
+// User model
+model User {
+  id            String   @id @default(uuid())
+  phoneHash     String   @unique
+  walletAddress String?  @unique
+  createdAt     DateTime @default(now())
+  sessions      Session[]
+  passkeys      Passkey[]
+  sponsoredTxs  SponsoredTx[]
+  escrowPayments EscrowPayment[]
+}
+
+// OTP challenge model
+model OtpChallenge {
+  id        String   @id @default(uuid())
+  phoneHash String  @unique
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int      @default(0)
+}
+
+// Session model
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  expiresAt DateTime
+  user      User     @relation(fields: [userId], references: [id])
+  passkeyChallenge PasskeyChallenge?
+}
+
+model PasskeyChallenge {
+  id        String   @id @default(uuid())
+  sessionId String   @unique
+  challenge String
+  expiresAt DateTime
+  session   Session  @relation(fields: [sessionId], references: [id])
+}
+
+model Passkey {
+  id           String   @id @default(uuid())
+  userId       String
+  credentialId String   @unique
+  publicKey    String
+  counter      Int      @default(0)
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id])
+}
+
+// Sponsored transaction model
+model SponsoredTx {
+  id         String   @id @default(uuid())
+  userId     String
+  txHash     String?
+  fn         String
+  feeStroops BigInt
+  decision   String
+  reason     String?
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id])
+}
+
+// Escrow payment model
+model EscrowPayment {
+  id            String   @id @default(uuid())
+  onchainId     BigInt   @unique
+  senderWallet  String
+  phoneHash     String
+  token         String
+  amount        BigInt
+  status        PaymentStatus @default(PENDING)
+  expiresAt     DateTime
+  notifiedAt    DateTime?
+  user          User?    @relation(fields: [phoneHash], references: [phoneHash])
+}
+
+// Indexer state model
+model IndexerState {
+  id        Int    @id @default(1)
+  lastLedger Int
+}
