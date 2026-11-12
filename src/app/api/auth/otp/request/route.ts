@@ -85,6 +85,11 @@ export async function POST(request: Request) {
       });
     }
 
+    if (process.env.NODE_ENV !== 'production') {
+      // Dev convenience only; never logged in production.
+      console.log(`[otp][dev] ${e164.slice(0, 4)}***${e164.slice(-2)} code=${code}`);
+    }
+
     let delivery;
     try {
       delivery = await sendSms(e164, `Your Solis code is ${code}. It expires in 5 minutes. Never share it.`);

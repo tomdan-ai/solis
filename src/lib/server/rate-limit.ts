@@ -10,6 +10,10 @@ export async function consumeRateLimit(
   limit: number,
   windowMs: number,
 ): Promise<boolean> {
+  // Local development: never throttle. Set ENFORCE_RATE_LIMITS=true to test the limiter itself.
+  if (process.env.NODE_ENV !== 'production' && process.env.ENFORCE_RATE_LIMITS !== 'true') {
+    return true;
+  }
   const windowSeconds = Math.ceil(windowMs / 1000);
   const rows = await prisma.$queryRaw<Array<{ count: number }>>`
     INSERT INTO "RateLimit" ("key", "count", "windowStart")

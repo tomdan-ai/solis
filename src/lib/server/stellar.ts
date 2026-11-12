@@ -4,10 +4,12 @@ import {
   Contract,
   Keypair,
   Networks,
+  Operation,
   TransactionBuilder,
   nativeToScVal,
   scValToNative,
   rpc,
+  xdr,
 } from '@stellar/stellar-sdk';
 import { phoneHashToHex } from '@/lib/server/phone';
 
@@ -197,4 +199,39 @@ export async function getUsdcBalance(wallet: string): Promise<string> {
   const sim = await server.simulateTransaction(tx);
   if (rpc.Api.isSimulationError(sim) || !sim.result) return '0';
   return String(scValToNative(sim.result.retval));
+}
+
+/**
+ * DEV ONLY: submits a signed host function straight to RPC, paying fees from a
+ * server-side deployer account. Used when no relayer is available; it proves the
+ * protocol end to end but not the final gasless experience.
+ */
+export function directRpcEnabled(): boolean {
+  return (
+    process.env.NODE_ENV !== 'production' &&
+    process.env.DEV_DIRECT_RPC === 'true' &&
+    Boolean(process.env.STELLAR_DEPLOYER_SECRET)
+  );
+}
+
+export async function submitHostFunctionDirect(funcXdr: string, authXdrs: string[]): Promise<string> {
+  if (!directRpcEnabled()) throw new Error('Direct RPC submission is disabled');
+  const deployer = Keypair.fromSecret(process.env.STELLAR_DEPLOYER_SECRET!);
+  const server = new rpc.Server(rpcUrl);
+  const account = await server.getAccount(deployer.publicKey());
+  const transaction = new TransactionBuilder(account, {
+    fee: process.env.STELLAR_BASE_FEE_STROOPS ?? BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(
+      Operation.invokeHostFunction({
+        func: xdr.HostFunction.fromXDR(funcXdr, 'base64'),
+        auth: authXdrs.map((entry) => xdr.SorobanAuthorizationEntry.fromXDR(entry, 'base64')),
+      }),
+    )
+    .setTimeout(60)
+    .build();
+  const prepared = await server.prepareTransaction(transaction);
+  prepared.sign(deployer);
+  return sendAndConfirm(server, prepared);
 }

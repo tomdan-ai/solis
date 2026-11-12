@@ -23,6 +23,7 @@ export async function sendSms(toE164: string, body: string): Promise<SmsResult> 
     if (process.env.NODE_ENV === 'production') {
       throw new Error('SMS provider is not configured');
     }
+    console.log(`[sms] dev mode, not sent to ${toE164.slice(0, 4)}***${toE164.slice(-2)} (Twilio not configured)`);
     return { delivered: false, provider: 'dev' };
   }
 
@@ -49,5 +50,8 @@ export async function sendSms(toE164: string, body: string): Promise<SmsResult> 
     console.error(`Twilio SMS failed: status=${response.status} code=${detail.code ?? 'n/a'} ${detail.message ?? ''}`);
     throw new Error('Could not send SMS');
   }
+  const sent = (await response.json().catch(() => ({}))) as { sid?: string; status?: string };
+  // Masked number only; "queued" means Twilio accepted it, not that the phone received it.
+  console.log(`[sms] ${toE164.slice(0, 4)}***${toE164.slice(-2)} sid=${sent.sid ?? 'n/a'} status=${sent.status ?? 'n/a'}`);
   return { delivered: true, provider: 'twilio' };
 }

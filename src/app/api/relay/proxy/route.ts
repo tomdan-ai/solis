@@ -3,6 +3,7 @@ import { PrismaClient } from '@/generated/prisma/client';
 import { NextResponse } from 'next/server';
 import { Address, Networks, Operation, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
 import { RelayerClient } from 'smart-account-kit';
+import { directRpcEnabled, submitHostFunctionDirect } from '@/lib/server/stellar';
 import { getSessionFromRequest } from '@/lib/server/auth';
 import {
   DEPLOY_CONTRACT_ID,
@@ -40,9 +41,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: 'Session is invalid or expired' }, { status: 401 });
     }
     const relayerUrl = process.env.RELAYER_URL?.trim();
-    if (!relayerUrl) {
-      return NextResponse.json({ success: false, error: 'RELAYER_URL is not configured' }, { status: 503 });
-    }
+    const useDirect = !relayerUrl && directRpcEnabled();
 
     const body = (await request.json()) as { func?: unknown; auth?: unknown; xdr?: unknown };
     let hostFn: xdr.HostFunction | null = null;
@@ -80,7 +79,27 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: policy.reason, errorCode: policy.reason }, { status: 403 });
     }
 
-    const relayer = new RelayerClient(relayerUrl);
+    if (!relayerUrl && !useDirect) {
+      await prisma.sponsoredTx.update({ where: { id: record.id }, data: { decision: 'FAILED', reason: 'NO_SUBMITTER' } });
+      return NextResponse.json({ success: false, error: 'RELAYER_URL is not configured' }, { status: 503 });
+    }
+
+    if (useDirect) {
+      if (typeof body.func !== 'string' || !Array.isArray(body.auth)) {
+        return NextResponse.json({ success: false, error: 'Direct RPC supports {func, auth} only' }, { status: 400 });
+      }
+      try {
+        const directHash = await submitHostFunctionDirect(body.func, body.auth as string[]);
+        await prisma.sponsoredTx.update({ where: { id: record.id }, data: { txHash: directHash, reason: 'SUBMITTED_DIRECT' } });
+        return NextResponse.json({ success: true, data: { hash: directHash, status: 'confirmed' } });
+      } catch (error) {
+        console.error('Direct RPC submit failed:', error);
+        await prisma.sponsoredTx.update({ where: { id: record.id }, data: { decision: 'FAILED', reason: 'DIRECT_RPC_FAILED' } });
+        return NextResponse.json({ success: false, error: error instanceof Error ? error.message : 'Submission failed' }, { status: 502 });
+      }
+    }
+
+    const relayer = new RelayerClient(relayerUrl as string);
     const result = typeof body.xdr === 'string'
       ? await relayer.sendXdr(body.xdr)
       : await relayer.send(body.func as string, body.auth as string[]);
