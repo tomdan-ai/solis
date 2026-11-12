@@ -92,13 +92,19 @@ export default function Home() {
     setMessage("Creating your passkey and deploying your wallet...");
     try {
       const kit = getKit();
-      const created = await kit.createWallet("Solis", phone || "Solis wallet", { autoSubmit: true });
+      const created = await Promise.race([
+        kit.createWallet("Solis", phone || "Solis wallet", { autoSubmit: true }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("No passkey prompt appeared. Open this page in Chrome or Safari (not an editor preview) and try again.")), 90_000),
+        ),
+      ]);
       setMessage("Linking your phone number...");
       await api("/api/wallets/register", { method: "POST", body: JSON.stringify({ walletAddress: created.contractId }) });
       setWallet(created.contractId);
       setMessage("");
       setScreen("wallet");
     } catch (error) {
+      console.error("Wallet setup failed:", error);
       setMessage(error instanceof Error ? error.message : "Wallet setup failed");
       setScreen("verify");
     }
@@ -324,7 +330,7 @@ export default function Home() {
           <form onSubmit={verifyCode} className="auth-form"><label htmlFor="code">Verification code</label><input id="code" className="code-input" value={code} onChange={(e) => setCode(e.target.value)} placeholder="000000" inputMode="numeric" autoComplete="one-time-code" maxLength={6} required /><button className="button button-dark" disabled={busy}>{busy ? "Verifying..." : "Open my wallet"}</button></form>
           <button className="text-button" onClick={() => setScreen("welcome")}>Use a different number</button>
           {wallet === "" && message === "Finish setting up your wallet." && <button className="button button-dark" onClick={deployWallet}>Create wallet now</button>}</>}
-        {screen === "deploying" && <><h2>Setting up your wallet</h2><p className="muted intro">Approve the passkey prompt, then we&apos;ll deploy your wallet. This takes a few seconds.</p></>}
+        {screen === "deploying" && <><h2>Setting up your wallet</h2><p className="muted intro">Approve the passkey prompt, then we&apos;ll deploy your wallet. This takes a few seconds.</p><button className="text-button" onClick={() => { setMessage(""); setScreen("verify"); }}>Cancel</button></>}
         {message && <p className="form-message">{message}</p>}
         <p className="legal">By continuing, you agree to the Solis terms. Your wallet is self-custodial.</p>
       </section>

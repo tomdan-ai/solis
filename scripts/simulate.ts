@@ -139,7 +139,7 @@ async function main() {
     assert(v === undefined || v === null, `expected none, got ${String(v)}`);
   });
   await step('USDC token responds (decimals)', async () => `decimals=${await read(probe, USDC, 'decimals')}`);
-  await step('PayEscrow responds (get_payment)', async () => { await read(probe, ESCROW, 'get_payment', nativeToScVal(0n, { type: 'u64' })); });
+  await step('PayEscrow responds (get_payment)', async () => { await read(probe, ESCROW, 'get_payment', nativeToScVal(BigInt(0), { type: 'u64' })); });
 
   console.log('\n3. Auth + API (real HTTP, simulated SMS)');
   const phoneA = randomPhone(), phoneB = randomPhone(), phoneC = randomPhone(), phoneD = randomPhone();
@@ -205,7 +205,7 @@ async function main() {
   const needChain = !attestor ? 'SOLIS_ATTESTOR_SECRET missing/invalid' : !funder ? 'FUNDER_SECRET missing/invalid' : undefined;
   let wA!: Keypair, wB!: Keypair, wC!: Keypair;
   const amount = usdc(10);
-  let claimId = -1n, refundId = -1n;
+  let claimId = BigInt(-1), refundId = BigInt(-1);
   await step('Create + fund 3 testnet wallets (Friendbot)', async () => { [wA, wB, wC] = await Promise.all([newFundedAccount(), newFundedAccount(), newFundedAccount()]); }, needChain);
   await step('Fund sender wallet with 50 test USDC', async () => {
     await invoke(funder!, USDC, 'transfer', addr(funder!.publicKey()), addr(wA.publicKey()), nativeToScVal(usdc(50), { type: 'i128' }));
