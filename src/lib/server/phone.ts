@@ -8,7 +8,12 @@ export function normalizePhone(value: unknown): string {
     throw new Error('Phone number is required');
   }
 
-  const digits = value.replace(/^\+/, '').replace(/\D/g, '');
+  const trimmed = value.trim();
+  let digits = trimmed.replace(/^\+/, '').replace(/\D/g, '');
+  // Nigerian local format (0803 123 4567): swap the trunk 0 for the country code.
+  if (!trimmed.startsWith('+') && /^0\d{10}$/.test(digits)) {
+    digits = `234${digits.slice(1)}`;
+  }
   if (digits.length < 8 || digits.length > 15) {
     throw new Error('Phone number must be a valid international number');
   }
@@ -39,4 +44,17 @@ export function phoneHashToHex(phoneHash: string): string {
     throw new Error('phoneHash must contain 32 bytes');
   }
   return hex.toLowerCase();
+}
+
+/** Country allow-list (E.164 calling codes, no +). Default: Nigeria only. */
+export function isAllowedCountry(e164: string): boolean {
+  const allowed = (process.env.SMS_ALLOWED_COUNTRY_CODES ?? '234')
+    .split(',')
+    .map((code) => code.trim())
+    .filter(Boolean);
+  const digits = e164.replace(/^\+/, '');
+  if (!allowed.some((code) => digits.startsWith(code))) return false;
+  // Nigeria: +234 followed by a 10-digit national number.
+  if (digits.startsWith('234') && digits.length !== 13) return false;
+  return true;
 }

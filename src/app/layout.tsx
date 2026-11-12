@@ -15,7 +15,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Solis | Phone-native payments",
   description: "Send USDC to a phone number on Stellar.",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: { capable: true, title: "Solis" },
 };
+
+export const viewport = { themeColor: "#111111" };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
