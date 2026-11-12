@@ -258,7 +258,7 @@ export default function Home() {
     return (
       <main className="app-shell wallet-shell">
         <header className="topbar"><span className="wordmark">solis<span>.</span></span><span className="network-dot">{network === "testnet" ? "Testnet" : "Mainnet"}</span></header>
-        <nav className="action-grid">
+        <nav className="action-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
           {(["home", "receive", "settings"] as Tab[]).map((t) => (
             <button key={t} className={`action-card ${tab === t ? "primary" : ""}`} onClick={() => setTab(t)}><strong>{t[0].toUpperCase() + t.slice(1)}</strong></button>
           ))}

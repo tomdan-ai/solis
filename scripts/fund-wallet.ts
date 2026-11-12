@@ -1,7 +1,7 @@
 /**
  * Sends test USDC from a funded Stellar account to a Solis smart wallet.
  *
- *   npx tsx --env-file=.env scripts/fund-wallet.ts <C...wallet> <amount in USDC>
+ *   npx tsx --env-file=.env scripts/fund-wallet.ts <G... or C... wallet> <amount in USDC>
  *
  * Needs in .env: FUNDER_SECRET (account holding the test USDC, or the asset's issuer,
  * in which case the transfer mints), SOLIS_USDC_CONTRACT_ID, STELLAR_RPC_URL.
@@ -14,8 +14,8 @@ async function main() {
   const [wallet, amountArg] = process.argv.slice(2);
   const secret = process.env.FUNDER_SECRET;
   const token = process.env.SOLIS_USDC_CONTRACT_ID;
-  if (!wallet?.startsWith('C') || !amountArg || !secret || !token) {
-    throw new Error('Usage: fund-wallet.ts <C...wallet> <amount>; FUNDER_SECRET and SOLIS_USDC_CONTRACT_ID must be set');
+  if (!(wallet?.startsWith('C') || wallet?.startsWith('G')) || !amountArg || !secret || !token) {
+    throw new Error('Usage: fund-wallet.ts <G... or C... wallet> <amount>; FUNDER_SECRET and SOLIS_USDC_CONTRACT_ID must be set');
   }
   if (!/^\d+(\.\d{1,7})?$/.test(amountArg)) throw new Error('Amount must be a number with up to 7 decimals');
   const [whole, frac = ''] = amountArg.split('.');

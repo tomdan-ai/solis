@@ -106,6 +106,7 @@ async function http(path: string, init: RequestInit & { cookie?: string } = {}) 
     headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}), ...(rest.headers ?? {}) },
   });
   const body = await res.json().catch(() => ({}));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return { res, status: res.status, body: body as Record<string, any> };
 }
 
@@ -158,7 +159,7 @@ async function main() {
     assert(cookie, 'no session cookie set');
     return cookie.split(';')[0];
   }
-  let cookieA = '', cookieB = '';
+  let cookieA = '';
   await step('Wrong OTP is rejected', async () => {
     await db.query(
       `insert into "OtpChallenge" (id, "phoneHash", "codeHash", "expiresAt", attempts)
@@ -170,7 +171,7 @@ async function main() {
     assert(status === 400, `expected 400, got ${status}`);
   });
   await step('Sender signs in (OTP -> httpOnly session cookie)', async () => { cookieA = await signIn(phoneA, hashA); });
-  await step('Recipient signs in', async () => { cookieB = await signIn(phoneB, hashB); });
+  await step('Recipient signs in', async () => { await signIn(phoneB, hashB); });
   await step('Session endpoint restores the session', async () => {
     const { status, body } = await http('/api/auth/session', { cookie: cookieA });
     assert(status === 200 && body.authenticated === true, `got ${status}`);
