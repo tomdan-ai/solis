@@ -1,0 +1,10 @@
+{
+  "name": "Solis",
+  "short_name": "Solis",
+  "description": "Send USDC to a phone number on Stellar.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#111111",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

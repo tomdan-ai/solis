@@ -2,6 +2,7 @@ import { PrismaClient } from '@/generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/server/auth';
+import { simTransfers, simUsdcEnabled } from '@/lib/server/sim-usdc';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter });
@@ -13,7 +14,9 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Session is invalid or expired' }, { status: 401 });
     }
 
-    const visiblePayments = [{ phoneHash: session.user.phoneHash }];
+    const visiblePayments: Array<{ phoneHash: string } | { senderWallet: string }> = [
+      { phoneHash: session.user.phoneHash },
+    ];
     if (session.user.walletAddress) {
       visiblePayments.push({ senderWallet: session.user.walletAddress });
     }
@@ -26,7 +29,7 @@ export async function GET(request: Request) {
     // Format response
     const formattedPayments = payments.map((payment) => ({
       id: payment.id,
-      onchainId: payment.onchainId,
+      onchainId: payment.onchainId.toString(),
       senderWallet: payment.senderWallet,
       phoneHash: payment.phoneHash,
       token: payment.token,
@@ -39,6 +42,12 @@ export async function GET(request: Request) {
     return NextResponse.json({
       success: true,
       payments: formattedPayments,
+      transfers: simUsdcEnabled() && session.user.walletAddress
+        ? (await simTransfers(prisma, session.user.walletAddress)).map((t) => ({
+            id: t.id, kind: t.kind, fromWallet: t.fromWallet, toWallet: t.toWallet,
+            amount: t.amount.toString(), createdAt: t.createdAt,
+          }))
+        : [],
       total: formattedPayments.length,
     });
   } catch (error) {

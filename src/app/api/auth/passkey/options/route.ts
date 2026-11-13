@@ -26,7 +26,7 @@ export async function POST(request: Request) {
     rpName: 'Solis',
     rpID: rpId(),
     userID: Buffer.from(session.userId),
-    userName: session.user.phoneHash,
+    userName: 'Solis wallet',
     userDisplayName: 'Solis wallet',
     attestationType: 'none',
     excludeCredentials: existingPasskeys.map((passkey) => ({ id: passkey.credentialId })),

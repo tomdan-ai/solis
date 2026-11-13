@@ -2,7 +2,9 @@ import { PrismaClient } from '@/generated/prisma/client';
 import { NextResponse } from 'next/server';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { createHash, randomInt } from 'crypto';
-import { phoneHashFromInput } from '@/lib/server/phone';
+import { hashPhone, isAllowedCountry, normalizePhone } from '@/lib/server/phone';
+import { sendSms } from '@/lib/server/sms';
+import { clientIp, consumeRateLimit } from '@/lib/server/rate-limit';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter });
@@ -22,13 +24,33 @@ export async function POST(request: Request) {
       );
     }
 
+    let e164: string;
     let phoneHash: string;
     try {
-      phoneHash = phoneHashFromInput(phone);
+      e164 = normalizePhone(phone);
+      phoneHash = hashPhone(e164);
     } catch (error) {
       return NextResponse.json(
         { error: error instanceof Error ? error.message : 'Invalid phone number' },
         { status: 400 },
+      );
+    }
+
+    if (!isAllowedCountry(e164)) {
+      return NextResponse.json(
+        { error: 'Solis is currently available for Nigerian phone numbers only' },
+        { status: 400 },
+      );
+    }
+
+    const [phoneOk, ipOk] = await Promise.all([
+      consumeRateLimit(prisma, `otp:phone:${phoneHash}`, 3, 10 * 60 * 1000),
+      consumeRateLimit(prisma, `otp:ip:${clientIp(request)}`, 10, 60 * 60 * 1000),
+    ]);
+    if (!phoneOk || !ipOk) {
+      return NextResponse.json(
+        { error: 'Too many code requests. Please wait a few minutes and try again.' },
+        { status: 429 },
       );
     }
 
@@ -63,15 +85,26 @@ export async function POST(request: Request) {
       });
     }
 
-    // TODO: Send OTP via SMS provider (Twilio, etc.)
-    // For now, log the code for development/testing
-    console.log(`OTP generated for ${phoneHash}`);
+    if (process.env.NODE_ENV !== 'production') {
+      // Dev convenience only; never logged in production.
+      console.log(`[otp][dev] ${e164.slice(0, 4)}***${e164.slice(-2)} code=${code}`);
+    }
+
+    let delivery;
+    try {
+      delivery = await sendSms(e164, `Your Solis code is ${code}. It expires in 5 minutes. Never share it.`);
+    } catch {
+      return NextResponse.json(
+        { error: 'We could not send your code. Please try again.' },
+        { status: 502 },
+      );
+    }
 
     return NextResponse.json({
       success: true,
       message: 'OTP sent successfully',
-      // In production, do not return the code
-      devOnly: process.env.NODE_ENV !== 'production' ? { code } : undefined,
+      // Only when no SMS provider is configured outside production.
+      devOnly: delivery.provider === 'dev' ? { code } : undefined,
     });
   } catch (error) {
     console.error('OTP request error:', error);

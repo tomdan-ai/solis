@@ -38,13 +38,6 @@ export async function GET(request: Request) {
       where: { phoneHash },
     });
 
-    if (!user) {
-      return NextResponse.json(
-        { error: 'User not found. Complete onboarding first.' },
-        { status: 404 }
-      );
-    }
-
     // Rate limit: check recent resolve requests
     const recentResolve = await prisma.rateLimit.findFirst({
       where: { key: `resolve:${session.userId}:${phoneHash}` },
@@ -75,8 +68,9 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       success: true,
-      walletAddress: user.walletAddress,
-      phoneHash: user.phoneHash,
+      registered: Boolean(user?.walletAddress),
+      walletAddress: user?.walletAddress ?? null,
+      phoneHash,
     });
   } catch (error) {
     console.error('Resolve error:', error);
